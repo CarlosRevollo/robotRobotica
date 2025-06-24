@@ -16,8 +16,19 @@ class ServidorRobotRecolector:
         self.estados_robot = {}
         
         # Configuración de tamaños
-        self.tamaño_minimo = 50  # Píxeles mínimos para considerar "suficientemente grande"
-        self.tamaño_maximo = 200  # Píxeles máximos para estar "muy cerca"
+        self.tamaño_minimo = 5000  # Píxeles mínimos para considerar "suficientemente grande"
+        self.tamaño_maximo = 30000  # Píxeles máximos para estar "muy cerca"
+        
+        # Configuración de velocidades por estado
+        self.velocidades = {
+            "buscar_objeto": {"derecha": 120, "izquierda": 120},      # Velocidad normal para búsqueda
+            "ir_al_objeto": {"derecha": 100, "izquierda": 100},       # Velocidad media para acercarse
+            "ir_al_objeto_lento": {"derecha": 80, "izquierda": 80},   # Velocidad lenta para precisión
+            "buscar_destino": {"derecha": 110, "izquierda": 110},     # Velocidad para buscar destino
+            "ir_a_destino": {"derecha": 100, "izquierda": 100},       # Velocidad para ir a destino
+            "ir_a_destino_lento": {"derecha": 70, "izquierda": 70},   # Velocidad lenta para llegar al destino
+            "exploracion": {"derecha": 90, "izquierda": 90}           # Velocidad para exploración
+        }
         
         # Objetos reconocidos
         self.objetos_validos = [
@@ -31,7 +42,7 @@ class ServidorRobotRecolector:
         ]
         # Destinos reconocidos (donde dejar objetos cilindro)
         self.destinos_validos_cilindro = [
-            "contenedor_ciindro", 
+            "contenedor_cilindro",  # Corregido el typo
         ]
         
     def iniciar_servidor(self):
@@ -50,6 +61,11 @@ class ServidorRobotRecolector:
             print(f"🕐 Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             print(f"📏 Tamaño mínimo objeto: {self.tamaño_minimo} píxeles")
             print(f"📏 Tamaño máximo (muy cerca): {self.tamaño_maximo} píxeles")
+            
+            print("\n⚡ Configuración de velocidades por estado:")
+            for estado, vel in self.velocidades.items():
+                print(f"   {estado}: D={vel['derecha']}, I={vel['izquierda']}")
+            
             print("\n🔄 Estados del robot:")
             print("   1. BUSCAR_OBJETO → Busca objetos para recolectar")
             print("   2. IR_AL_OBJETO → Se acerca al objeto detectado")
@@ -87,24 +103,38 @@ class ServidorRobotRecolector:
         try:
             data = client_socket.recv(1024).decode('utf-8').strip()
             
-            print("datossssssssssssssssssssssssssssssssssssss")
-            print(data)
             if not data:
                 return None
                 
             try:
                 datos_camara = json.loads(data)
-                print("sssssssssssssssssssss")
-                print(data)
                 return datos_camara
             except json.JSONDecodeError:
                 # Si no es JSON, intentar parsear como texto simple
-               
                 return {"objeto": data.lower(), "tamaño": 0}
                 
         except Exception as e:
             print(f"❌ Error recibiendo datos de cámara: {e}")
             return None
+    
+    def configurar_velocidad(self, client_socket, estado, robot_id):
+        """Configura la velocidad del robot según el estado"""
+        if estado in self.velocidades:
+            vel = self.velocidades[estado]
+            
+            # Enviar comandos de velocidad
+            comando_der = f"VELOCIDADD {vel['derecha']}"
+            comando_izq = f"VELOCIDADI {vel['izquierda']}"
+            
+            try:
+                client_socket.send((comando_der + '\n').encode('utf-8'))
+                time.sleep(0.05)  # Pequeña pausa entre comandos
+                client_socket.send((comando_izq + '\n').encode('utf-8'))
+                
+                print(f"⚡ [{robot_id}] Velocidad configurada para {estado}: D={vel['derecha']}, I={vel['izquierda']}")
+                
+            except Exception as e:
+                print(f"❌ Error configurando velocidad: {e}")
     
     def inicializar_estado_robot(self, robot_id):
         """Inicializa el estado de un nuevo robot"""
@@ -117,14 +147,20 @@ class ServidorRobotRecolector:
             "intentos_busqueda": 0,
             "direccion_giro": "derecha",
             "ultimo_comando": None,
-            "contador_movimientos": 0
+            "contador_movimientos": 0,
+            "velocidad_actual": None
         }
         print(f"🔄 [{robot_id}] Estado inicial: BUSCAR_OBJETO")
     
-    def procesar_estado_buscar_objeto(self, datos_camara, estado_robot, robot_id):
+    def procesar_estado_buscar_objeto(self, datos_camara, estado_robot, robot_id, client_socket):
         """Procesa el estado de búsqueda de objetos"""
         objeto = datos_camara.get("objeto", "").lower()
         tamaño = datos_camara.get("tamaño", 0)
+        
+        # Configurar velocidad para búsqueda
+        if estado_robot["velocidad_actual"] != "buscar_objeto":
+            self.configurar_velocidad(client_socket, "buscar_objeto", robot_id)
+            estado_robot["velocidad_actual"] = "buscar_objeto"
         
         # Verificar si detectó un objeto válido
         if objeto in self.objetos_validos and tamaño > 10:
@@ -139,7 +175,7 @@ class ServidorRobotRecolector:
             if tamaño < self.tamaño_minimo:
                 return "AVANZAR"
             else:
-                return "AVANZAR_LENTO"
+                return "AVANZAR"
         else:
             # No hay objeto, seguir buscando
             estado_robot["intentos_busqueda"] += 1
@@ -148,7 +184,7 @@ class ServidorRobotRecolector:
                 print(f"🔍 [{robot_id}] Buscando... avanzando ({estado_robot['intentos_busqueda']}/3)")
                 return "AVANZAR"
             elif estado_robot["intentos_busqueda"] < 8:
-                direccion = "GIRAR_DERECHA" if estado_robot["direccion_giro"] == "derecha" else "GIRAR_IZQUIERDA"
+                direccion = "DERECHA" if estado_robot["direccion_giro"] == "derecha" else "IZQUIERDA"
                 print(f"🔍 [{robot_id}] Buscando... girando {estado_robot['direccion_giro']}")
                 return direccion
             else:
@@ -156,9 +192,9 @@ class ServidorRobotRecolector:
                 estado_robot["direccion_giro"] = "izquierda" if estado_robot["direccion_giro"] == "derecha" else "derecha"
                 estado_robot["intentos_busqueda"] = 0
                 print(f"🔄 [{robot_id}] Cambiando dirección de búsqueda")
-                return "GIRAR_DERECHA" if estado_robot["direccion_giro"] == "derecha" else "GIRAR_IZQUIERDA"
+                return "DERECHA" if estado_robot["direccion_giro"] == "derecha" else "IZQUIERDA"
     
-    def procesar_estado_ir_al_objeto(self, datos_camara, estado_robot, robot_id):
+    def procesar_estado_ir_al_objeto(self, datos_camara, estado_robot, robot_id, client_socket):
         """Procesa el estado de acercarse al objeto"""
         objeto = datos_camara.get("objeto", "").lower()
         tamaño = datos_camara.get("tamaño", 0)
@@ -180,14 +216,20 @@ class ServidorRobotRecolector:
             return "PARAR"
         elif tamaño < self.tamaño_minimo:
             # Muy lejos, avanzar normal
+            if estado_robot["velocidad_actual"] != "ir_al_objeto":
+                self.configurar_velocidad(client_socket, "ir_al_objeto", robot_id)
+                estado_robot["velocidad_actual"] = "ir_al_objeto"
             print(f"⬆️ [{robot_id}] Muy lejos, avanzando (tamaño: {tamaño})")
             return "AVANZAR"
         else:
             # Cerca pero no suficiente, avanzar lento
+            if estado_robot["velocidad_actual"] != "ir_al_objeto_lento":
+                self.configurar_velocidad(client_socket, "ir_al_objeto_lento", robot_id)
+                estado_robot["velocidad_actual"] = "ir_al_objeto_lento"
             print(f"🐌 [{robot_id}] Acercándose lentamente (tamaño: {tamaño})")
-            return "AVANZAR_LENTO"
+            return "AVANZAR"
     
-    def procesar_estado_recoger(self, datos_camara, estado_robot, robot_id):
+    def procesar_estado_recoger(self, datos_camara, estado_robot, robot_id, client_socket):
         """Procesa el estado de recoger objeto"""
         print(f"🤏 [{robot_id}] Recogiendo objeto...")
         estado_robot["tiene_objeto"] = True
@@ -195,170 +237,99 @@ class ServidorRobotRecolector:
         estado_robot["intentos_busqueda"] = 0
         print(f"✅ [{robot_id}] Objeto recogido exitosamente")
         print(f"🔄 [{robot_id}] Cambiando a estado: BUSCAR_DESTINO")
-        return "RECOGER"
+        return "AGARRAR"  # Usa el comando de secuencia completa
     
-    # def procesar_estado_buscar_destino(self, datos_camara, estado_robot, robot_id):
-    #     """Procesa el estado de búsqueda de destino"""
-    #     objeto = datos_camara.get("objeto", "").lower()
-    #     tamaño = datos_camara.get("tamaño", 0)
-        
-    #     # Verificar si detectó un destino válido
-    #     if objeto in self.destinos_validos and tamaño > 20:
-    #         estado_robot["destino_detectado"] = objeto
-    #         estado_robot["estado_actual"] = "ir_a_destino"
-    #         estado_robot["intentos_busqueda"] = 0
-            
-    #         print(f"🎯 [{robot_id}] ¡Destino detectado! {objeto.upper()}")
-    #         print(f"🔄 [{robot_id}] Cambiando a estado: IR_A_DESTINO")
-    #         return "AVANZAR"
-    #     else:
-    #         # No hay destino, seguir buscando (giro 360°)
-    #         estado_robot["intentos_busqueda"] += 1
-            
-    #         if estado_robot["intentos_busqueda"] <= 12:  # 12 giros = ~360°
-    #             print(f"🔍 [{robot_id}] Buscando destino... giro {estado_robot['intentos_busqueda']}/12")
-    #             return "GIRAR_DERECHA"
-    #         else:
-    #             # Completó 360°, buscar moviéndose
-    #             if estado_robot["intentos_busqueda"] < 20:
-    #                 print(f"🔍 [{robot_id}] Destino no encontrado, explorando...")
-    #                 return "AVANZAR"
-    #             else:
-    #                 # Reiniciar búsqueda
-    #                 estado_robot["intentos_busqueda"] = 0
-    #                 return "GIRAR_DERECHA"
-
-    def procesar_estado_buscar_destino(self, datos_camara, estado_robot, robot_id):
+    def procesar_estado_buscar_destino(self, datos_camara, estado_robot, robot_id, client_socket):
         """Procesa el estado de búsqueda de destino"""
         objeto = datos_camara.get("objeto", "").lower()
         tamaño = datos_camara.get("tamaño", 0)
         
-
-        if objeto == "cuadradro":
-            if objeto in self.destinos_validos_cuadrado and tamaño > 20:
-                estado_robot["destino_detectado"] = objeto
-                estado_robot["estado_actual"] = "ir_a_destino"
-                estado_robot["intentos_busqueda"] = 0
-                
-                print(f"🎯 [{robot_id}] ¡Destino detectado! {objeto.upper()}")
-                print(f"🔄 [{robot_id}] Cambiando a estado: IR_A_DESTINO")
-                return "AVANZAR"
-            else:
-                # No hay destino, seguir buscando (giro 360°)
-                estado_robot["intentos_busqueda"] += 1
-                
-                if estado_robot["intentos_busqueda"] <= 12:  # 12 giros = ~360°
-                    print(f"🔍 [{robot_id}] Buscando destino... giro {estado_robot['intentos_busqueda']}/12")
-                    return "GIRAR_DERECHA"
-                else:
-                    # Completó 360°, buscar moviéndose
-                    if estado_robot["intentos_busqueda"] < 20:
-                        print(f"🔍 [{robot_id}] Destino no encontrado, explorando...")
-                        return "AVANZAR"
-                    else:
-                        # Reiniciar búsqueda
-                        estado_robot["intentos_busqueda"] = 0
-                        return "GIRAR_DERECHA"
+        # Configurar velocidad para búsqueda de destino
+        if estado_robot["velocidad_actual"] != "buscar_destino":
+            self.configurar_velocidad(client_socket, "buscar_destino", robot_id)
+            estado_robot["velocidad_actual"] = "buscar_destino"
+        
+        # Determinar destinos válidos según el objeto que tiene
+        objeto_en_mano = estado_robot["objeto_detectado"]
+        destinos_validos = []
+        
+        if objeto_en_mano == "cuadrado":
+            destinos_validos = self.destinos_validos_cuadrado
+        elif objeto_en_mano == "cilindro":
+            destinos_validos = self.destinos_validos_cilindro
+        
+        # Verificar si detectó un destino válido
+        if objeto in destinos_validos and tamaño > 20:
+            estado_robot["destino_detectado"] = objeto
+            estado_robot["estado_actual"] = "ir_a_destino"
+            estado_robot["intentos_busqueda"] = 0
+            
+            print(f"🎯 [{robot_id}] ¡Destino detectado! {objeto.upper()} para {objeto_en_mano}")
+            print(f"🔄 [{robot_id}] Cambiando a estado: IR_A_DESTINO")
+            return "AVANZAR"
         else:
-            if objeto in self.destinos_validos_cilindro and tamaño > 20:
-                estado_robot["destino_detectado"] = objeto
-                estado_robot["estado_actual"] = "ir_a_destino"
-                estado_robot["intentos_busqueda"] = 0
-                
-                print(f"🎯 [{robot_id}] ¡Destino detectado! {objeto.upper()}")
-                print(f"🔄 [{robot_id}] Cambiando a estado: IR_A_DESTINO")
-                return "AVANZAR"
+            # No hay destino, seguir buscando (giro 360°)
+            estado_robot["intentos_busqueda"] += 1
+            
+            if estado_robot["intentos_busqueda"] <= 12:  # 12 giros = ~360°
+                print(f"🔍 [{robot_id}] Buscando destino para {objeto_en_mano}... giro {estado_robot['intentos_busqueda']}/12")
+                return "DERECHA"
             else:
-                # No hay destino, seguir buscando (giro 360°)
-                estado_robot["intentos_busqueda"] += 1
-                
-                if estado_robot["intentos_busqueda"] <= 12:  # 12 giros = ~360°
-                    print(f"🔍 [{robot_id}] Buscando destino... giro {estado_robot['intentos_busqueda']}/12")
-                    return "GIRAR_DERECHA"
+                # Completó 360°, buscar moviéndose
+                if estado_robot["intentos_busqueda"] < 20:
+                    if estado_robot["velocidad_actual"] != "exploracion":
+                        self.configurar_velocidad(client_socket, "exploracion", robot_id)
+                        estado_robot["velocidad_actual"] = "exploracion"
+                    print(f"🔍 [{robot_id}] Destino no encontrado, explorando...")
+                    return "AVANZAR"
                 else:
-                    # Completó 360°, buscar moviéndose
-                    if estado_robot["intentos_busqueda"] < 20:
-                        print(f"🔍 [{robot_id}] Destino no encontrado, explorando...")
-                        return "AVANZAR"
-                    else:
-                        # Reiniciar búsqueda
-                        estado_robot["intentos_busqueda"] = 0
-                        return "GIRAR_DERECHA"
-
-
-        
+                    # Reiniciar búsqueda
+                    estado_robot["intentos_busqueda"] = 0
+                    return "DERECHA"
     
-    # def procesar_estado_ir_a_destino(self, datos_camara, estado_robot, robot_id):
-    #     """Procesa el estado de ir al destino"""
-    #     objeto = datos_camara.get("objeto", "").lower()
-    #     tamaño = datos_camara.get("tamaño", 0)
-        
-    #     if objeto not in self.destinos_validos:
-    #         # Perdió el destino, volver a buscar
-    #         print(f"⚠️ [{robot_id}] Destino perdido, volviendo a buscar")
-    #         estado_robot["estado_actual"] = "buscar_destino"
-    #         estado_robot["destino_detectado"] = None
-    #         return "PARAR"
-        
-    #     if tamaño >= self.tamaño_maximo:
-    #         # Llegó al destino
-    #         estado_robot["estado_actual"] = "dejar_objeto"
-    #         print(f"🎯 [{robot_id}] Llegó al destino")
-    #         print(f"🔄 [{robot_id}] Cambiando a estado: DEJAR_OBJETO")
-    #         return "PARAR"
-    #     else:
-    #         # Seguir acercándose
-    #         print(f"➡️ [{robot_id}] Yendo al destino (tamaño: {tamaño})")
-    #         return "AVANZAR" if tamaño < self.tamaño_minimo else "AVANZAR_LENTO"
-
-
-    def procesar_estado_ir_a_destino(self, datos_camara, estado_robot, robot_id):
+    def procesar_estado_ir_a_destino(self, datos_camara, estado_robot, robot_id, client_socket):
         """Procesa el estado de ir al destino"""
         objeto = datos_camara.get("objeto", "").lower()
         tamaño = datos_camara.get("tamaño", 0)
-
-
-        if object == "cuadrado":
-            if objeto not in self.destinos_validos_cuadrado:
-                # Perdió el destino, volver a buscar
-                print(f"⚠️ [{robot_id}] Destino perdido, volviendo a buscar")
-                estado_robot["estado_actual"] = "buscar_destino"
-                estado_robot["destino_detectado"] = None
-                return "PARAR"
-            
-            if tamaño >= self.tamaño_maximo:
-                # Llegó al destino
-                estado_robot["estado_actual"] = "dejar_objeto"
-                print(f"🎯 [{robot_id}] Llegó al destino")
-                print(f"🔄 [{robot_id}] Cambiando a estado: DEJAR_OBJETO")
-                return "PARAR"
-            else:
-                # Seguir acercándose
-                print(f"➡️ [{robot_id}] Yendo al destino (tamaño: {tamaño})")
-                return "AVANZAR" if tamaño < self.tamaño_minimo else "AVANZAR_LENTO"
-            
-        else:
-            if objeto not in self.destinos_validos_cilindro:
-                # Perdió el destino, volver a buscar
-                print(f"⚠️ [{robot_id}] Destino perdido, volviendo a buscar")
-                estado_robot["estado_actual"] = "buscar_destino"
-                estado_robot["destino_detectado"] = None
-                return "PARAR"
-            
-            if tamaño >= self.tamaño_maximo:
-                # Llegó al destino
-                estado_robot["estado_actual"] = "dejar_objeto"
-                print(f"🎯 [{robot_id}] Llegó al destino")
-                print(f"🔄 [{robot_id}] Cambiando a estado: DEJAR_OBJETO")
-                return "PARAR"
-            else:
-                # Seguir acercándose
-                print(f"➡️ [{robot_id}] Yendo al destino (tamaño: {tamaño})")
-                return "AVANZAR" if tamaño < self.tamaño_minimo else "AVANZAR_LENTO"
-            
         
+        # Determinar destinos válidos según el objeto que tiene
+        objeto_en_mano = estado_robot["objeto_detectado"]
+        destinos_validos = []
+        
+        if objeto_en_mano == "cuadrado":
+            destinos_validos = self.destinos_validos_cuadrado
+        elif objeto_en_mano == "cilindro":
+            destinos_validos = self.destinos_validos_cilindro
+        
+        if objeto not in destinos_validos:
+            # Perdió el destino, volver a buscar
+            print(f"⚠️ [{robot_id}] Destino perdido, volviendo a buscar")
+            estado_robot["estado_actual"] = "buscar_destino"
+            estado_robot["destino_detectado"] = None
+            return "PARAR"
+        
+        if tamaño >= self.tamaño_maximo:
+            # Llegó al destino
+            estado_robot["estado_actual"] = "dejar_objeto"
+            print(f"🎯 [{robot_id}] Llegó al destino")
+            print(f"🔄 [{robot_id}] Cambiando a estado: DEJAR_OBJETO")
+            return "PARAR"
+        else:
+            # Seguir acercándose
+            if tamaño < self.tamaño_minimo:
+                if estado_robot["velocidad_actual"] != "ir_a_destino":
+                    self.configurar_velocidad(client_socket, "ir_a_destino", robot_id)
+                    estado_robot["velocidad_actual"] = "ir_a_destino"
+                print(f"➡️ [{robot_id}] Yendo al destino (tamaño: {tamaño})")
+                return "AVANZAR"
+            else:
+                if estado_robot["velocidad_actual"] != "ir_a_destino_lento":
+                    self.configurar_velocidad(client_socket, "ir_a_destino_lento", robot_id)
+                    estado_robot["velocidad_actual"] = "ir_a_destino_lento"
+                print(f"🐌 [{robot_id}] Acercándose lentamente al destino (tamaño: {tamaño})")
+                return "AVANZAR"
     
-    def procesar_estado_dejar_objeto(self, datos_camara, estado_robot, robot_id):
+    def procesar_estado_dejar_objeto(self, datos_camara, estado_robot, robot_id, client_socket):
         """Procesa el estado de dejar objeto"""
         print(f"📦 [{robot_id}] Dejando objeto en el destino...")
         estado_robot["tiene_objeto"] = False
@@ -366,12 +337,13 @@ class ServidorRobotRecolector:
         estado_robot["objeto_detectado"] = None
         estado_robot["destino_detectado"] = None
         estado_robot["intentos_busqueda"] = 0
+        estado_robot["velocidad_actual"] = None  # Reset velocidad
         print(f"✅ [{robot_id}] Objeto entregado exitosamente")
         print(f"🔄 [{robot_id}] Cambiando a estado: BUSCAR_OBJETO")
         print(f"🎉 [{robot_id}] ¡Ciclo completado! Buscando nuevo objeto...")
-        return "SOLTAR"
+        return "SOLTAR"  # Usa el comando de secuencia completa
     
-    def procesar_datos_y_estado(self, datos_camara, robot_id):
+    def procesar_datos_y_estado(self, datos_camara, robot_id, client_socket):
         """Procesa los datos de la cámara según el estado actual del robot"""
         if robot_id not in self.estados_robot:
             self.inicializar_estado_robot(robot_id)
@@ -385,17 +357,17 @@ class ServidorRobotRecolector:
         
         # Procesar según el estado actual
         if estado_actual == "buscar_objeto":
-            comando = self.procesar_estado_buscar_objeto(datos_camara, estado_robot, robot_id)
+            comando = self.procesar_estado_buscar_objeto(datos_camara, estado_robot, robot_id, client_socket)
         elif estado_actual == "ir_al_objeto":
-            comando = self.procesar_estado_ir_al_objeto(datos_camara, estado_robot, robot_id)
+            comando = self.procesar_estado_ir_al_objeto(datos_camara, estado_robot, robot_id, client_socket)
         elif estado_actual == "recoger":
-            comando = self.procesar_estado_recoger(datos_camara, estado_robot, robot_id)
+            comando = self.procesar_estado_recoger(datos_camara, estado_robot, robot_id, client_socket)
         elif estado_actual == "buscar_destino":
-            comando = self.procesar_estado_buscar_destino(datos_camara, estado_robot, robot_id)
+            comando = self.procesar_estado_buscar_destino(datos_camara, estado_robot, robot_id, client_socket)
         elif estado_actual == "ir_a_destino":
-            comando = self.procesar_estado_ir_a_destino(datos_camara, estado_robot, robot_id)
+            comando = self.procesar_estado_ir_a_destino(datos_camara, estado_robot, robot_id, client_socket)
         elif estado_actual == "dejar_objeto":
-            comando = self.procesar_estado_dejar_objeto(datos_camara, estado_robot, robot_id)
+            comando = self.procesar_estado_dejar_objeto(datos_camara, estado_robot, robot_id, client_socket)
         else:
             comando = "PARAR"
         
@@ -407,27 +379,18 @@ class ServidorRobotRecolector:
     def enviar_comando(self, client_socket, comando, robot_id):
         """Envía comando al robot"""
         try:
-            # Crear respuesta JSON
-            respuesta = {
-                "comando": comando,
-                "estado": self.estados_robot[robot_id]["estado_actual"],
-                "tiene_objeto": self.estados_robot[robot_id]["tiene_objeto"],
-                "timestamp": datetime.now().isoformat(),
-                "status": "ok"
-            }
-            
-            mensaje = json.dumps(respuesta, ensure_ascii=False).encode('utf-8')
-            client_socket.send(mensaje)
+            # Enviar comando simple como string
+            mensaje = comando + '\n'
+            client_socket.send(mensaje.encode('utf-8'))
             
             # Mostrar comando enviado con emoji
             emojis_comandos = {
                 "AVANZAR": "⬆️",
-                "AVANZAR_LENTO": "🐌",
                 "RETROCEDER": "⬇️",
-                "GIRAR_IZQUIERDA": "⬅️",
-                "GIRAR_DERECHA": "➡️",
+                "IZQUIERDA": "⬅️",
+                "DERECHA": "➡️",
                 "PARAR": "⏹️",
-                "RECOGER": "🤏",
+                "AGARRAR": "🤏",
                 "SOLTAR": "📦"
             }
             
@@ -454,7 +417,7 @@ class ServidorRobotRecolector:
                     break
                 
                 # Procesar datos y obtener comando
-                comando = self.procesar_datos_y_estado(datos_camara, robot_id)
+                comando = self.procesar_datos_y_estado(datos_camara, robot_id, client_socket)
                 
                 # Enviar comando al robot
                 if not self.enviar_comando(client_socket, comando, robot_id):
@@ -462,11 +425,13 @@ class ServidorRobotRecolector:
                 
                 # Mostrar estado actual
                 estado = self.estados_robot[robot_id]
+                vel_actual = estado.get('velocidad_actual', 'No configurada')
                 print(f"📊 [{robot_id}] Estado: {estado['estado_actual'].upper()} | "
                       f"Objeto: {'✅' if estado['tiene_objeto'] else '❌'} | "
+                      f"Velocidad: {vel_actual} | "
                       f"Movimientos: {estado['contador_movimientos']}")
                 
-                print("-" * 50)
+                print("-" * 60)
                 
                 # Pequeña pausa
                 time.sleep(0.1)
@@ -513,16 +478,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n❌ Error crítico: {e}")
         servidor.detener_servidor()
-
-
-
-
-
-
-
-
-
-
-
-
-
